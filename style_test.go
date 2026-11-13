@@ -75,23 +75,26 @@ func TestStyleFromProperties(t *testing.T) {
 		{
 			desc: "BackgroundImageURLs single URL",
 			input: StyleProperties{
-				BackgroundImageURLs: []string{"http://goodUrl.com/a"},
+				BackgroundImageURLs:           []string{"http://goodUrl.com/a"},
+				BackgroundImageAllowedOrigins: []string{"http://goodurl.com"},
 			},
 			want: `background-image:url("http://goodUrl.com/a");`,
 		},
 		{
 			desc: "BackgroundImageURLs multiple URLs",
 			input: StyleProperties{
-				BackgroundImageURLs: []string{"http://goodUrl.com/a", "http://goodUrl.com/b"},
+				BackgroundImageURLs:           []string{"http://goodUrl.com/a", "http://goodUrl.com/b"},
+				BackgroundImageAllowedOrigins: []string{"http://goodurl.com"},
 			},
 			want: `background-image:url("http://goodUrl.com/a"), url("http://goodUrl.com/b");`,
 		},
 		{
-			desc: "BackgroundImageURLs invalid runes in URL escaped",
+			desc: "BackgroundImageURLs double quote in URL CSS-escaped",
 			input: StyleProperties{
-				BackgroundImageURLs: []string{"http://goodUrl.com/a\"\\\n"},
+				BackgroundImageURLs:           []string{`http://goodUrl.com/a"b`},
+				BackgroundImageAllowedOrigins: []string{"http://goodurl.com"},
 			},
-			want: `background-image:url("http://goodUrl.com/a\000022\00005C\00000A");`,
+			want: `background-image:url("http://goodUrl.com/a\000022b");`,
 		},
 		{
 			desc: "FontFamily unquoted names",
@@ -229,14 +232,15 @@ func TestStyleFromProperties(t *testing.T) {
 		{
 			desc: "multiple properties",
 			input: StyleProperties{
-				BackgroundImageURLs: []string{"http://goodUrl.com/a", "http://goodUrl.com/b"},
-				FontFamily:          []string{"serif", "Goudy Bookletter 1911", "Times New Roman", "monospace"},
-				BackgroundColor:     "#bbff10",
-				BackgroundPosition:  "100px -110px",
-				BackgroundRepeat:    "no-repeat",
-				BackgroundSize:      "10px",
-				Width:               "12px",
-				Height:              "10px",
+				BackgroundImageURLs:           []string{"http://goodUrl.com/a", "http://goodUrl.com/b"},
+				BackgroundImageAllowedOrigins: []string{"http://goodurl.com"},
+				FontFamily:                    []string{"serif", "Goudy Bookletter 1911", "Times New Roman", "monospace"},
+				BackgroundColor:               "#bbff10",
+				BackgroundPosition:            "100px -110px",
+				BackgroundRepeat:              "no-repeat",
+				BackgroundSize:                "10px",
+				Width:                         "12px",
+				Height:                        "10px",
 			},
 			want: `background-image:url("http://goodUrl.com/a"), url("http://goodUrl.com/b");` +
 				`font-family:serif, "Goudy Bookletter 1911", "Times New Roman", monospace;` +
@@ -250,11 +254,12 @@ func TestStyleFromProperties(t *testing.T) {
 		{
 			desc: "multiple properties, some empty and unset",
 			input: StyleProperties{
-				BackgroundImageURLs: []string{"http://goodUrl.com/a", "http://goodUrl.com/b"},
-				BackgroundPosition:  "100px -110px",
-				BackgroundSize:      "",
-				Width:               "12px",
-				Height:              "10px",
+				BackgroundImageURLs:           []string{"http://goodUrl.com/a", "http://goodUrl.com/b"},
+				BackgroundImageAllowedOrigins: []string{"http://goodurl.com"},
+				BackgroundPosition:            "100px -110px",
+				BackgroundSize:                "",
+				Width:                         "12px",
+				Height:                        "10px",
 			},
 			want: `background-image:url("http://goodUrl.com/a"), url("http://goodUrl.com/b");` +
 				`background-position:100px -110px;` +
@@ -360,11 +365,247 @@ func TestStyleFromProperties(t *testing.T) {
 		{
 			desc: "less-than rune CSS-escaped",
 			input: StyleProperties{
-				BackgroundImageURLs: []string{`</style><script>evil()</script>`},
+				BackgroundImageURLs: []string{`/</style><script>evil()</script>`},
 				FontFamily:          []string{`</style><script>evil()</script>`},
 			},
-			want: `background-image:url("\00003C/style>\00003Cscript>evil()\00003C/script>");` +
+			want: `background-image:url("/\00003C/style>\00003Cscript>evil()\00003C/script>");` +
 				`font-family:"\00003C/style>\00003Cscript>evil()\00003C/script>";`,
+		},
+	} {
+		got := StyleFromProperties(test.input).String()
+		if got != test.want {
+			t.Errorf("%s:\ngot:\n\t%s\nwant\n\t%s", test.desc, got, test.want)
+		}
+	}
+}
+
+func TestStyleFromPropertiesCSSResourcePolicy(t *testing.T) {
+	for _, test := range [...]struct {
+		desc  string
+		input StyleProperties
+		want  string
+	}{
+		{
+			desc:  "same-site absolute path allowed",
+			input: StyleProperties{BackgroundImageURLs: []string{"/images/a.png"}},
+			want:  `background-image:url("/images/a.png");`,
+		},
+		{
+			desc:  "same-site absolute path with query and fragment allowed",
+			input: StyleProperties{BackgroundImageURLs: []string{"/images/a.png?v=2#frag"}},
+			want:  `background-image:url("/images/a.png?v=2#frag");`,
+		},
+		{
+			desc: "whitelisted origin allowed",
+			input: StyleProperties{
+				BackgroundImageURLs:           []string{"https://cdn.example.com/a.png"},
+				BackgroundImageAllowedOrigins: []string{"https://cdn.example.com"},
+			},
+			want: `background-image:url("https://cdn.example.com/a.png");`,
+		},
+		{
+			desc: "whitelisted origin match is case-insensitive for scheme and host",
+			input: StyleProperties{
+				BackgroundImageURLs:           []string{"HTTPS://CDN.EXAMPLE.COM/a.png"},
+				BackgroundImageAllowedOrigins: []string{"https://cdn.example.com"},
+			},
+			want: `background-image:url("HTTPS://CDN.EXAMPLE.COM/a.png");`,
+		},
+		{
+			desc: "whitelisted origin with non-default port allowed",
+			input: StyleProperties{
+				BackgroundImageURLs:           []string{"https://cdn.example.com:8443/a.png"},
+				BackgroundImageAllowedOrigins: []string{"https://cdn.example.com:8443"},
+			},
+			want: `background-image:url("https://cdn.example.com:8443/a.png");`,
+		},
+		{
+			desc:  "absolute URL rejected without whitelist",
+			input: StyleProperties{BackgroundImageURLs: []string{"https://cdn.example.com/a.png"}},
+			want:  `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc: "non-whitelisted origin rejected",
+			input: StyleProperties{
+				BackgroundImageURLs:           []string{"https://evil.example.com/a.png"},
+				BackgroundImageAllowedOrigins: []string{"https://cdn.example.com"},
+			},
+			want: `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc: "whitelisted origin suffix lookalike rejected",
+			input: StyleProperties{
+				BackgroundImageURLs:           []string{"https://cdn.example.com.evil.com/a.png"},
+				BackgroundImageAllowedOrigins: []string{"https://cdn.example.com"},
+			},
+			want: `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc: "default port not normalized away",
+			input: StyleProperties{
+				BackgroundImageURLs:           []string{"https://cdn.example.com:443/a.png"},
+				BackgroundImageAllowedOrigins: []string{"https://cdn.example.com"},
+			},
+			want: `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc:  "protocol-relative URL rejected",
+			input: StyleProperties{BackgroundImageURLs: []string{"//evil.example.com/a.png"}},
+			want:  `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc: "protocol-relative URL rejected even for whitelisted origin",
+			input: StyleProperties{
+				BackgroundImageURLs:           []string{"//cdn.example.com/a.png"},
+				BackgroundImageAllowedOrigins: []string{"https://cdn.example.com"},
+			},
+			want: `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc: "credentials in URL rejected",
+			input: StyleProperties{
+				BackgroundImageURLs:           []string{"https://user:pass@cdn.example.com/a.png"},
+				BackgroundImageAllowedOrigins: []string{"https://cdn.example.com"},
+			},
+			want: `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc: "credentials-only userinfo in URL rejected",
+			input: StyleProperties{
+				BackgroundImageURLs:           []string{"https://user@cdn.example.com/a.png"},
+				BackgroundImageAllowedOrigins: []string{"https://cdn.example.com"},
+			},
+			want: `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc:  "javascript scheme rejected",
+			input: StyleProperties{BackgroundImageURLs: []string{"javascript:alert(1)"}},
+			want:  `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc:  "mixed-case javascript scheme rejected",
+			input: StyleProperties{BackgroundImageURLs: []string{"JaVaScRiPt:alert(1)"}},
+			want:  `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc:  "javascript scheme with embedded tab rejected",
+			input: StyleProperties{BackgroundImageURLs: []string{"java\tscript:alert(1)"}},
+			want:  `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc:  "data scheme rejected",
+			input: StyleProperties{BackgroundImageURLs: []string{"data:image/png;base64,iVBORw0KGgo="}},
+			want:  `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc: "non-http(s) scheme rejected even if whitelisted",
+			input: StyleProperties{
+				BackgroundImageURLs:           []string{"ftp://cdn.example.com/a.png"},
+				BackgroundImageAllowedOrigins: []string{"ftp://cdn.example.com"},
+			},
+			want: `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc:  "scheme without slashes rejected",
+			input: StyleProperties{BackgroundImageURLs: []string{"http:evil.example.com"}},
+			want:  `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc:  "relative path rejected",
+			input: StyleProperties{BackgroundImageURLs: []string{"images/a.png"}},
+			want:  `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc:  "empty URL rejected",
+			input: StyleProperties{BackgroundImageURLs: []string{""}},
+			want:  `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc:  "dot segment in same-site path rejected",
+			input: StyleProperties{BackgroundImageURLs: []string{"/images/../secret/a.png"}},
+			want:  `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc:  "single-dot segment in same-site path rejected",
+			input: StyleProperties{BackgroundImageURLs: []string{"/images/./a.png"}},
+			want:  `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc: "dot segment in whitelisted URL path rejected",
+			input: StyleProperties{
+				BackgroundImageURLs:           []string{"https://cdn.example.com/a/../../b.png"},
+				BackgroundImageAllowedOrigins: []string{"https://cdn.example.com"},
+			},
+			want: `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc:  "percent-encoded dot segment rejected",
+			input: StyleProperties{BackgroundImageURLs: []string{"/%2e%2e/secret/a.png"}},
+			want:  `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc:  "mixed percent-encoded dot segment rejected",
+			input: StyleProperties{BackgroundImageURLs: []string{"/a/.%2E/b.png"}},
+			want:  `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc:  "percent-encoded slash in segment rejected",
+			input: StyleProperties{BackgroundImageURLs: []string{"/a%2f..%2f/b.png"}},
+			want:  `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc:  "percent-encoded backslash rejected",
+			input: StyleProperties{BackgroundImageURLs: []string{"/%5C%5Cevil.example.com/a.png"}},
+			want:  `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc:  "invalid percent-encoding rejected",
+			input: StyleProperties{BackgroundImageURLs: []string{"/images/%zz/a.png"}},
+			want:  `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc:  "backslash in path rejected",
+			input: StyleProperties{BackgroundImageURLs: []string{`/images\..\a.png`}},
+			want:  `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc:  "backslash instead of slashes rejected",
+			input: StyleProperties{BackgroundImageURLs: []string{`https:\\evil.example.com\a.png`}},
+			want:  `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc:  "leading space rejected",
+			input: StyleProperties{BackgroundImageURLs: []string{" /images/a.png"}},
+			want:  `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc:  "embedded newline rejected",
+			input: StyleProperties{BackgroundImageURLs: []string{"/images/a\n.png"}},
+			want:  `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc: "malformed whitelist entry never matches",
+			input: StyleProperties{
+				BackgroundImageURLs:           []string{"https://cdn.example.com/a.png"},
+				BackgroundImageAllowedOrigins: []string{"cdn.example.com"},
+			},
+			want: `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc: "whitelist entry with path never matches",
+			input: StyleProperties{
+				BackgroundImageURLs:           []string{"https://cdn.example.com/a.png"},
+				BackgroundImageAllowedOrigins: []string{"https://cdn.example.com/a"},
+			},
+			want: `background-image:url("about:invalid#zGoSafez");`,
+		},
+		{
+			desc: "mixed allowed and rejected URLs",
+			input: StyleProperties{
+				BackgroundImageURLs:           []string{"/a.png", "https://evil.example.com/b.png", "https://cdn.example.com/c.png"},
+				BackgroundImageAllowedOrigins: []string{"https://cdn.example.com"},
+			},
+			want: `background-image:url("/a.png"), url("about:invalid#zGoSafez"), url("https://cdn.example.com/c.png");`,
 		},
 	} {
 		got := StyleFromProperties(test.input).String()
@@ -399,7 +640,7 @@ func TestStyleFromPropertiesAllFieldsValidated(t *testing.T) {
 			t.Fatalf("unknown %s field %q in StyleProperties", f.Type().Kind(), v.Type().Field(i).Name)
 		}
 	}
-	const want = `background-image:url("\00003C/style>\00003Cscript>evil()\00003C/script>");` +
+	const want = `background-image:url("about:invalid#zGoSafez");` +
 		`font-family:"\00003C/style>\00003Cscript>evil()\00003C/script>";` +
 		`display:zGoSafezInvalidPropertyValue;` +
 		`background-color:zGoSafezInvalidPropertyValue;` +

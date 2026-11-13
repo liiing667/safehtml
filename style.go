@@ -9,6 +9,7 @@ package safehtml
 import (
 	"bytes"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -110,11 +111,27 @@ func (s Style) String() string {
 // property.
 type StyleProperties struct {
 	// BackgroundImageURLs contains URL values for the background-image property.
-	// These values val_1, val_2, ..., val_n will be passed through URLSanitized and CSS-escaped in
-	// StyleFromProperties, then interpolated into to a comma-separated list of CSS URLs of the form
+	// These values val_1, val_2, ..., val_n will be validated against a strict CSS resource
+	// policy and CSS-escaped in StyleFromProperties, then interpolated into a comma-separated
+	// list of CSS URLs of the form
 	//    url("val_1"), url("val_2"), ..., url("val_n")
+	// To prevent the page from leaking data to or fetching resources from third parties, each
+	// value must either be a same-site absolute path (e.g. "/images/a.png") or an http(s) URL
+	// whose origin appears in BackgroundImageAllowedOrigins. Protocol-relative URLs, URLs with
+	// embedded credentials, non-http(s) schemes (such as javascript: or data:), paths containing
+	// dot segments, and escape-based bypasses (backslashes, control runes, percent-encoded dot
+	// segments or separators) are rejected. Rejected values are replaced with InnocuousURL.
 	// See https://www.w3.org/TR/CSS2/syndata.html#value-def-uri and https://drafts.csswg.org/css-backgrounds-3/#layering.
 	BackgroundImageURLs []string
+	// BackgroundImageAllowedOrigins contains the origins from which BackgroundImageURLs may
+	// load resources. Each entry must be of the form "scheme://host[:port]" with an http or
+	// https scheme and no userinfo, path, query, or fragment, for example
+	// "https://cdn.example.com" or "https://cdn.example.com:8443". Matching is
+	// case-insensitive on scheme and host but otherwise exact; in particular, default ports
+	// are not normalized, so "https://example.com" does not match
+	// "https://example.com:443". Entries that do not have this form never match.
+	// If empty, only same-site absolute paths are accepted in BackgroundImageURLs.
+	BackgroundImageAllowedOrigins []string
 	// FontFamily values are used, comma-separated, as the font-family property.
 	//    * Names starting with a Latin alphabet runes and containing only Latin alphabets and hyphens will be included unquoted.
 	//    * Names enclosed in double quote literals (e.g. `"21st Century"`) will be CSS-escaped without the outermost quotes,
@@ -177,7 +194,7 @@ func StyleFromProperties(properties StyleProperties) Style {
 			if i > 0 {
 				buf.WriteString(", ")
 			}
-			fmt.Fprintf(&buf, "url(\"%s\")", cssEscapeString(URLSanitized(url).String()))
+			fmt.Fprintf(&buf, "url(\"%s\")", cssEscapeString(sanitizeCSSResourceURL(url, properties.BackgroundImageAllowedOrigins)))
 		}
 		buf.WriteString(";")
 	}
@@ -278,6 +295,101 @@ func filter(value string, pattern *regexp.Regexp) string {
 		return InnocuousPropertyValue
 	}
 	return value
+}
+
+// sanitizeCSSResourceURL validates rawURL against a strict CSS resource policy and returns
+// rawURL if it is accepted, or InnocuousURL otherwise. A URL is accepted only if it is
+//   - a same-site absolute path, i.e. it starts with a single '/', contains no scheme or
+//     authority, and has a clean path; or
+//   - an absolute http(s) URL whose origin (scheme://host[:port], case-insensitively
+//     normalized) exactly matches an entry of allowedOrigins.
+//
+// Protocol-relative URLs ("//host/path"), URLs with embedded credentials
+// ("https://user@host/"), non-http(s) schemes (including javascript: and data:), paths
+// containing dot segments ("." or ".."), and escape-based bypasses (backslashes, C0
+// control runes or spaces that browsers strip from URLs, and percent-encoded dot segments
+// or path separators) are rejected.
+func sanitizeCSSResourceURL(rawURL string, allowedOrigins []string) string {
+	if rawURL == "" || containsUnsafeURLRune(rawURL) {
+		return InnocuousURL
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Opaque != "" {
+		return InnocuousURL
+	}
+	if u.Scheme == "" {
+		// Only same-site absolute paths are allowed. A leading "//" would be
+		// protocol-relative (u.Host != ""), and anything not starting with '/'
+		// would be a relative path.
+		if u.Host != "" || !strings.HasPrefix(rawURL, "/") || !isCleanResourcePath(u.Path) {
+			return InnocuousURL
+		}
+		return rawURL
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return InnocuousURL
+	}
+	if u.User != nil || u.Host == "" {
+		return InnocuousURL
+	}
+	if u.Path != "" && !isCleanResourcePath(u.Path) {
+		return InnocuousURL
+	}
+	origin := scheme + "://" + strings.ToLower(u.Host)
+	for _, allowed := range allowedOrigins {
+		if origin == normalizeOrigin(allowed) {
+			return rawURL
+		}
+	}
+	return InnocuousURL
+}
+
+// containsUnsafeURLRune reports whether s contains runes that could be used to smuggle a
+// disallowed URL past validation: backslashes (which URL parsers may treat as path
+// separators) and C0 control runes, spaces, or DEL (which browsers strip from URLs before
+// parsing them, e.g. turning "java\tscript:" into "javascript:").
+func containsUnsafeURLRune(s string) bool {
+	for _, r := range s {
+		if r <= '\u0020' || r == '\u007F' || r == '\\' {
+			return true
+		}
+	}
+	return false
+}
+
+// isCleanResourcePath reports whether path, which must already be percent-decoded,
+// is an absolute path free of dot segments and backslashes. Percent-encoded dot segments
+// and separators are caught because url.Parse decodes them into path before this check.
+func isCleanResourcePath(path string) bool {
+	if !strings.HasPrefix(path, "/") {
+		return false
+	}
+	for _, segment := range strings.Split(path, "/") {
+		if segment == "." || segment == ".." || strings.ContainsRune(segment, '\\') {
+			return false
+		}
+	}
+	return true
+}
+
+// normalizeOrigin returns the canonical "scheme://host[:port]" form of origin, or "" if
+// origin is not a valid http(s) origin: it must have an http or https scheme, a non-empty
+// host, and no userinfo, path, query, or fragment.
+func normalizeOrigin(origin string) string {
+	u, err := url.Parse(origin)
+	if err != nil {
+		return ""
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return ""
+	}
+	if u.Opaque != "" || u.User != nil || u.Host == "" ||
+		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return ""
+	}
+	return scheme + "://" + strings.ToLower(u.Host)
 }
 
 // cssEscapeString escapes s so that it is safe to put between "" to form a CSS <string-token>.

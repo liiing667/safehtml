@@ -154,6 +154,20 @@ func (e *escaper) escapeAction(c context, n *parse.ActionNode) context {
 	case stateAttrName, stateTag:
 		c.state = stateAttrName
 	}
+	// Record that this attribute value is not fully static so that form
+	// submission policy validation fails closed on data-controlled values.
+	c.attrHasAction = true
+	if c.element.name == "form" && (c.attr.name == "method" || c.attr.name == "target") {
+		// The form's own submission policy must be fully static for later
+		// button/input overrides to be checkable against it. An action anywhere
+		// inside the policy attribute makes the policy ambiguous. This flag is set
+		// here (and not only when the attribute closes) because control actions such
+		// as {{if}} produce no text and therefore never reach attribute-close time.
+		c.ambiguousFormPolicy = true
+	}
+	if c.element.name == "form" && c.attr.name == "enctype" {
+		c.ambiguousFormEncoding = true
+	}
 	// TODO: integrate sanitizerForContext into escapeAction.
 	s, err := sanitizerForContext(c)
 	if err != nil {
@@ -383,6 +397,16 @@ func joinNames(aName, bName string, aNames, bNames []string) []string {
 
 // escapeBranch escapes a branch template node: "if", "range" and "with".
 func (e *escaper) escapeBranch(c context, n *parse.BranchNode, nodeName string) context {
+	if c.element.name == "form" && (c.attr.name == "method" || c.attr.name == "target") && isInTag(c.state) {
+		// A branch anywhere inside a form's submission-policy attribute makes the
+		// policy non-static. Mark it before descending so that ambiguity survives even
+		// when the branches produce identical text, and so it is available as soon as
+		// the attribute closes.
+		c.ambiguousFormPolicy = true
+	}
+	if c.element.name == "form" && c.attr.name == "enctype" && isInTag(c.state) {
+		c.ambiguousFormEncoding = true
+	}
 	c0 := e.escapeList(c, n.List)
 	if nodeName == "range" && c0.state != stateError {
 		// The "true" branch of a "range" node can execute multiple times.
@@ -708,10 +732,15 @@ func contextAfterText(c context, s []byte) (context, int) {
 	// On exiting an attribute, we discard all state information
 	// except the state, element, scriptType, and linkRel.
 	ret := context{
-		state:      stateTag,
-		element:    c.element,
-		scriptType: c.scriptType,
-		linkRel:    c.linkRel,
+		state:                 stateTag,
+		element:               c.element,
+		scriptType:            c.scriptType,
+		linkRel:               c.linkRel,
+		inForm:                c.inForm,
+		formMethod:            c.formMethod,
+		formTarget:            c.formTarget,
+		ambiguousFormPolicy:   c.ambiguousFormPolicy,
+		ambiguousFormEncoding: c.ambiguousFormEncoding,
 	}
 	// Save the script element's type attribute value if we are parsing it for the first time.
 	if c.state == stateAttr && c.element.name == "script" && c.attr.name == "type" {
@@ -720,6 +749,18 @@ func contextAfterText(c context, s []byte) (context, int) {
 	// Save the link element's rel attribute value if we are parsing it for the first time.
 	if c.state == stateAttr && c.element.name == "link" && c.attr.name == "rel" {
 		ret.linkRel = " " + strings.Join(strings.Fields(strings.TrimSpace(strings.ToLower(string(s[:i])))), " ") + " "
+	}
+	// Save and validate the form submission policy.
+	if c.state == stateAttr {
+		if errCtx := captureFormSubmissionPolicy(c, string(s[:i])); errCtx.err != nil {
+			return errCtx, len(s)
+		} else {
+			ret.inForm = errCtx.inForm
+			ret.formMethod = errCtx.formMethod
+			ret.formTarget = errCtx.formTarget
+			ret.ambiguousFormPolicy = errCtx.ambiguousFormPolicy
+			ret.ambiguousFormEncoding = errCtx.ambiguousFormEncoding
+		}
 	}
 	if c.delim != delimSpaceOrTagEnd {
 		// Consume any quote.

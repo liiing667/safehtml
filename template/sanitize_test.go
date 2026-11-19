@@ -408,7 +408,64 @@ func TestSanitize(t *testing.T) {
 		},
 		{
 			input:  `<form method="{{ "get<" }}"></form>`,
-			output: `<form method="get&lt;"></form>`, // untrusted string is still HTML-escaped
+			output: ``,
+			err:    `expected one of the following strings: ["get" "post"]`,
+		},
+		{
+			input:  `<form method="{{ "post" }}"></form>`,
+			output: `<form method="post"></form>`,
+			err:    ``,
+		},
+		// Form submission overrides on buttons and inputs must keep the enclosing
+		// form's submission policy.
+		{
+			input:  `<form method="post" action="/login"><button formmethod="get">Go</button></form>`,
+			output: ``,
+			err:    `conflicts with the enclosing form's method "post"`,
+		},
+		{
+			input:  `<form method="post" action="/login"><input type="submit" formmethod="get"></form>`,
+			output: ``,
+			err:    `conflicts with the enclosing form's method "post"`,
+		},
+		{
+			input:  `<form method="post" action="/login"><button formmethod="post">Go</button></form>`,
+			output: `<form method="post" action="/login"><button formmethod="post">Go</button></form>`,
+			err:    ``,
+		},
+		{
+			input:  `<form method="post" action="/login"><button formmethod="{{ "get" }}">Go</button></form>`,
+			output: ``,
+			err:    `actions must not determine the "formmethod" attribute`,
+		},
+		{
+			input:  `<form method="post" action="/login"><button formaction="https://evil.example.com/log">Go</button></form>`,
+			output: ``,
+			err:    `"formaction" attribute of a "button" element overrides the enclosing form's submission policy`,
+		},
+		{
+			input:  `<form method="post" action="/login"><input type="image" formaction="/elsewhere"></form>`,
+			output: ``,
+			err:    `"formaction" attribute of a "input" element overrides the enclosing form's submission policy`,
+		},
+		{
+			input:  `<form target="_self" action="/login"><button formtarget="_blank">Go</button></form>`,
+			output: ``,
+			err:    `conflicts with the enclosing form's target "_self"`,
+		},
+		{
+			input:  `<form target="_blank" action="/login"><button formtarget="_blank">Go</button></form>`,
+			output: `<form target="_blank" action="/login"><button formtarget="_blank">Go</button></form>`,
+			err:    ``,
+		},
+		{
+			input:  `<form target="{{ "_blank" }}" action="/login"></form>`,
+			output: `<form target="_blank" action="/login"></form>`,
+			err:    ``,
+		},
+		{
+			input:  `<form action="/login" method="post"><input type="password" name="pw"><button>Go</button></form>`,
+			output: `<form action="/login" method="post"><input type="password" name="pw"><button>Go</button></form>`,
 			err:    ``,
 		},
 		// Element content contexts that expect HTML.

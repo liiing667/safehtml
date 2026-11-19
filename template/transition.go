@@ -54,6 +54,16 @@ func tText(c context, s []byte) (context, int) {
 			if !end {
 				ret.element = e
 			}
+			if end && e.name == "form" {
+				// Leaving the enclosing form. Discard its submission policy so that
+				// elements outside the form are not validated against it.
+				return ret, j
+			}
+			ret.inForm = c.inForm
+			ret.formMethod = c.formMethod
+			ret.formTarget = c.formTarget
+			ret.ambiguousFormPolicy = c.ambiguousFormPolicy
+			ret.ambiguousFormEncoding = c.ambiguousFormEncoding
 			return ret, j
 		}
 		k = j
@@ -98,10 +108,15 @@ func tTag(c context, s []byte) (context, int) {
 	}
 	if s[i] == '>' {
 		ret := context{
-			state:      stateText,
-			element:    c.element,
-			scriptType: c.scriptType,
-			linkRel:    c.linkRel,
+			state:                 stateText,
+			element:               c.element,
+			scriptType:            c.scriptType,
+			linkRel:               c.linkRel,
+			inForm:                c.inForm,
+			formMethod:            c.formMethod,
+			formTarget:            c.formTarget,
+			ambiguousFormPolicy:   c.ambiguousFormPolicy,
+			ambiguousFormEncoding: c.ambiguousFormEncoding,
 		}
 		if specialElements[c.element.name] {
 			ret.state = stateSpecialElementBody
@@ -112,6 +127,15 @@ func tTag(c context, s []byte) (context, int) {
 			ret.element = element{}
 			ret.scriptType = ""
 			ret.linkRel = ""
+		}
+		if c.element.name == "form" {
+			// The start tag of a form (possibly without any attributes) has ended, so
+			// subsequent elements are inside this form and inherit its policy. A form
+			// without an explicit method defaults to GET, matching the browser.
+			ret.inForm = true
+			if ret.formMethod == "" && !ret.ambiguousFormPolicy {
+				ret.formMethod = "get"
+			}
 		}
 		return ret, i + 1
 	}
@@ -133,10 +157,15 @@ func tTag(c context, s []byte) (context, int) {
 		state = stateAfterName
 	}
 	return context{
-		state:   state,
-		element: c.element,
-		attr:    attr{name: strings.ToLower(string(s[i:j]))},
-		linkRel: c.linkRel,
+		state:                 state,
+		element:               c.element,
+		attr:                  attr{name: strings.ToLower(string(s[i:j]))},
+		linkRel:               c.linkRel,
+		inForm:                c.inForm,
+		formMethod:            c.formMethod,
+		formTarget:            c.formTarget,
+		ambiguousFormPolicy:   c.ambiguousFormPolicy,
+		ambiguousFormEncoding: c.ambiguousFormEncoding,
 	}, j
 }
 

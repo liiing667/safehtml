@@ -36,6 +36,25 @@ type context struct {
 	// the rel attribute has not already been parsed in the current element, or if the
 	// value of the rel attribute cannot be determined at parse time.
 	linkRel string
+	// inForm reports whether the parser is currently inside a "form" element.
+	inForm bool
+	// formMethod is the normalized lowercase value of the "method" attribute of the
+	// enclosing "form" element (see https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fs-method).
+	// It is empty if the value cannot be determined at parse time.
+	formMethod string
+	// formTarget is the value of the "target" attribute of the enclosing "form" element
+	// (see https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fs-target).
+	// It is empty if the value cannot be determined at parse time.
+	formTarget string
+	// ambiguousFormPolicy reports whether the enclosing "form" element's submission
+	// policy cannot be statically determined because of context joining.
+	ambiguousFormPolicy bool
+	// ambiguousFormEncoding reports whether the enclosing "form" element's
+	// "enctype" cannot be statically determined because of an action or branching.
+	ambiguousFormEncoding bool
+	// attrHasAction reports whether the current attribute value contains one or
+	// more template actions, so it is not entirely made of static template text.
+	attrHasAction bool
 }
 
 // eq returns whether Context c is equal to Context d.
@@ -46,7 +65,10 @@ func (c context) eq(d context) bool {
 		c.attr.eq(d.attr) &&
 		c.err == d.err &&
 		c.scriptType == d.scriptType &&
-		c.linkRel == d.linkRel
+		c.linkRel == d.linkRel &&
+		c.inForm == d.inForm &&
+		c.formMethod == d.formMethod &&
+		c.formTarget == d.formTarget
 }
 
 // state describes a high-level HTML parser state.

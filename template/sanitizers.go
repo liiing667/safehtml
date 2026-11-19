@@ -8,10 +8,11 @@ package template
 
 import (
 	"fmt"
+	"strings"
 	"text/template"
 
-	"github.com/google/safehtml/internal/safehtmlutil"
 	"github.com/google/safehtml"
+	"github.com/google/safehtml/internal/safehtmlutil"
 )
 
 // sanitizationContext determines what type of sanitization to perform
@@ -22,6 +23,8 @@ const (
 	_ = iota
 	sanitizationContextAsyncEnum
 	sanitizationContextDirEnum
+	sanitizationContextFormEncodingEnum
+	sanitizationContextFormMethodEnum
 	sanitizationContextHTML
 	sanitizationContextHTMLValOnly
 	sanitizationContextIdentifier
@@ -57,7 +60,7 @@ func (s sanitizationContext) sanitizerName() string {
 
 // isEnum reports reports whether s is a sanitization context for enumerated values.
 func (s sanitizationContext) isEnum() bool {
-	return s == sanitizationContextAsyncEnum || s == sanitizationContextDirEnum || s == sanitizationContextLoadingEnum || s == sanitizationContextTargetEnum
+	return s == sanitizationContextAsyncEnum || s == sanitizationContextDirEnum || s == sanitizationContextFormEncodingEnum || s == sanitizationContextFormMethodEnum || s == sanitizationContextLoadingEnum || s == sanitizationContextTargetEnum
 }
 
 // isURLorTrustedResourceURL reports reports whether s is a sanitization context for URL or TrustedResourceURL values.
@@ -74,6 +77,8 @@ var sanitizationContextInfo = [...]struct {
 }{
 	sanitizationContextAsyncEnum:               {"AsyncEnum", sanitizeAsyncEnumFuncName},
 	sanitizationContextDirEnum:                 {"DirEnum", sanitizeDirEnumFuncName},
+	sanitizationContextFormEncodingEnum:        {"FormEncodingEnum", sanitizeFormEncodingEnumFuncName},
+	sanitizationContextFormMethodEnum:          {"FormMethodEnum", sanitizeFormMethodEnumFuncName},
 	sanitizationContextHTML:                    {"HTML", sanitizeHTMLFuncName},
 	sanitizationContextHTMLValOnly:             {"HTMLValOnly", sanitizeHTMLValOnlyFuncName},
 	sanitizationContextIdentifier:              {"Identifier", sanitizeIdentifierFuncName},
@@ -98,6 +103,8 @@ var funcs = template.FuncMap{
 	sanitizeHTMLCommentFuncName:                    sanitizeHTMLComment,
 	sanitizeAsyncEnumFuncName:                      sanitizeAsyncEnum,
 	sanitizeDirEnumFuncName:                        sanitizeDirEnum,
+	sanitizeFormEncodingEnumFuncName:               sanitizeFormEncodingEnum,
+	sanitizeFormMethodEnumFuncName:                 sanitizeFormMethodEnum,
 	sanitizeHTMLFuncName:                           sanitizeHTML,
 	sanitizeHTMLValOnlyFuncName:                    sanitizeHTMLValOnly,
 	sanitizeIdentifierFuncName:                     sanitizeIdentifier,
@@ -121,6 +128,8 @@ const (
 	sanitizeHTMLCommentFuncName                    = "_sanitizeHTMLComment"
 	sanitizeAsyncEnumFuncName                      = "_sanitizeAsyncEnum"
 	sanitizeDirEnumFuncName                        = "_sanitizeDirEnum"
+	sanitizeFormEncodingEnumFuncName               = "_sanitizeFormEncodingEnum"
+	sanitizeFormMethodEnumFuncName                 = "_sanitizeFormMethodEnum"
 	sanitizeHTMLFuncName                           = "_sanitizeHTML"
 	sanitizeHTMLValOnlyFuncName                    = "_sanitizeHTMLValOnly"
 	sanitizeIdentifierFuncName                     = "_sanitizeIdentifier"
@@ -174,16 +183,27 @@ var elementSpecificAttrValSanitizationContext = map[string]map[string]sanitizati
 		"button": sanitizationContextURL,
 		"input":  sanitizationContextURL,
 	},
+	"formenctype": {
+		"button": sanitizationContextFormEncodingEnum,
+		"input":  sanitizationContextFormEncodingEnum,
+	},
 	"formmethod": {
-		"button": sanitizationContextNone,
-		"input":  sanitizationContextNone,
+		"button": sanitizationContextFormMethodEnum,
+		"input":  sanitizationContextFormMethodEnum,
+	},
+	"formtarget": {
+		"button": sanitizationContextTargetEnum,
+		"input":  sanitizationContextTargetEnum,
 	},
 	"href": {
 		"a":    sanitizationContextTrustedResourceURLOrURL,
 		"area": sanitizationContextTrustedResourceURLOrURL,
 	},
+	"enctype": {
+		"form": sanitizationContextFormEncodingEnum,
+	},
 	"method": {
-		"form": sanitizationContextNone,
+		"form": sanitizationContextFormMethodEnum,
 	},
 	"pattern": {
 		"input": sanitizationContextNone,
@@ -273,10 +293,8 @@ var globalAttrValSanitizationContext = map[string]sanitizationContext{
 	"disabled":              sanitizationContextNone,
 	"download":              sanitizationContextNone,
 	"draggable":             sanitizationContextNone,
-	"enctype":               sanitizationContextNone,
 	"face":                  sanitizationContextNone,
 	"for":                   sanitizationContextIdentifier,
-	"formenctype":           sanitizationContextNone,
 	"frameborder":           sanitizationContextNone,
 	"height":                sanitizationContextNone,
 	"hidden":                sanitizationContextNone,
@@ -503,6 +521,33 @@ func sanitizeHTML(args ...interface{}) (string, error) {
 	}
 	input := safehtmlutil.Stringify(args...)
 	return safehtml.HTMLEscaped(input).String(), nil
+}
+
+var sanitizeFormMethodEnumValues = map[string]bool{
+	"get":  true,
+	"post": true,
+}
+
+func sanitizeFormMethodEnum(args ...interface{}) (string, error) {
+	input := strings.ToLower(safehtmlutil.Stringify(args...))
+	if sanitizeFormMethodEnumValues[input] {
+		return input, nil
+	}
+	return "", fmt.Errorf(`expected one of the following strings: ["get" "post"]`)
+}
+
+var sanitizeFormEncodingEnumValues = map[string]bool{
+	"application/x-www-form-urlencoded": true,
+	"multipart/form-data":               true,
+	"text/plain":                        true,
+}
+
+func sanitizeFormEncodingEnum(args ...interface{}) (string, error) {
+	input := strings.ToLower(strings.TrimSpace(safehtmlutil.Stringify(args...)))
+	if sanitizeFormEncodingEnumValues[input] {
+		return input, nil
+	}
+	return "", fmt.Errorf(`expected one of the following strings: ["application/x-www-form-urlencoded" "multipart/form-data" "text/plain"]`)
 }
 
 func sanitizeHTMLValOnly(args ...interface{}) (string, error) {

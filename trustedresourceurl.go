@@ -52,6 +52,14 @@ type TrustedResourceURL struct {
 //
 // Map entries with empty keys or values are ignored. The order of appended
 // keys is guaranteed to be stable but may differ from the order in input.
+//
+// A parameter whose key already appears in the TrustedResourceURL's query
+// component is ignored. Query parameters embedded in the TrustedResourceURL
+// are application-controlled (for example, signed CDN parameters or
+// allowlist callbacks); appending a duplicate key would leave the effective
+// value ambiguous because different gateways resolve repeated parameters
+// differently, so caller-supplied parameters must not be able to shadow the
+// trusted ones. The fragment identifier, if any, is preserved.
 func TrustedResourceURLWithParams(t TrustedResourceURL, params map[string]string) TrustedResourceURL {
 	url := t.str
 	var fragment string
@@ -74,12 +82,33 @@ func TrustedResourceURLWithParams(t TrustedResourceURL, params map[string]string
 			sep = "&"
 		}
 	}
+	// Query parameters already present in the TrustedResourceURL are owned by
+	// the application. A trusted URL may carry signed or otherwise
+	// security-sensitive parameters (e.g. CDN signature parameters and
+	// allowlist callbacks). Appending a user-supplied parameter with the same
+	// name would create a duplicate key, and different gateways disagree on
+	// which duplicate value to use, so the trusted value could be overridden.
+	// Such conflicting parameters are therefore dropped instead of appended.
+	reservedParams := make(map[string]bool)
+	if i := strings.IndexRune(url, '?'); i != -1 {
+		for _, param := range strings.Split(url[i+1:], "&") {
+			if key := strings.SplitN(param, "=", 2)[0]; key != "" {
+				reservedParams[key] = true
+			}
+		}
+	}
 	stringParams := make([]string, 0, len(params))
 	for k, v := range params {
 		if k == "" || v == "" {
 			continue
 		}
-		stringParam := safehtmlutil.QueryEscapeURL(k) + "=" + safehtmlutil.QueryEscapeURL(v)
+		escapedKey := safehtmlutil.QueryEscapeURL(k)
+		if reservedParams[escapedKey] {
+			// The trusted URL already owns this parameter name; do not let
+			// caller-supplied input shadow it with a duplicate key.
+			continue
+		}
+		stringParam := escapedKey + "=" + safehtmlutil.QueryEscapeURL(v)
 		stringParams = append(stringParams, stringParam)
 	}
 	if len(stringParams) > 0 {

@@ -61,6 +61,46 @@ func TestTrustedResourceURLWithParams(t *testing.T) {
 			map[string]string{`b`: `y`},
 			`https://example.com/?a=x&b=y#foo`,
 		},
+		{
+			// A caller-supplied parameter must not shadow a parameter already
+			// owned by the trusted URL by introducing a duplicate key.
+			TrustedResourceURLFromConstant(`https://example.com/?a=x`),
+			map[string]string{`a`: `evil`},
+			`https://example.com/?a=x`,
+		},
+		{
+			// The trusted value wins, while unrelated caller parameters are
+			// still appended in the stable, sorted order.
+			TrustedResourceURLFromConstant(`https://example.com/?a=x&sig=abc`),
+			map[string]string{`a`: `evil`, `b`: `y`, `sig`: `forged`},
+			`https://example.com/?a=x&sig=abc&b=y`,
+		},
+		{
+			// Ownership checks also apply when a fragment is present.
+			TrustedResourceURLFromConstant(`https://example.com/?a=x#foo`),
+			map[string]string{`a`: `evil`, `b`: `y`},
+			`https://example.com/?a=x&b=y#foo`,
+		},
+		{
+			// A key without an explicit "=" value is still owned by the URL.
+			TrustedResourceURLFromConstant(`https://example.com/?a&b=y`),
+			map[string]string{`a`: `evil`, `c`: `z`},
+			`https://example.com/?a&b=y&c=z`,
+		},
+		{
+			// Escaped caller keys are compared against the raw query bytes,
+			// so percent-encoding cannot be used to smuggle a duplicate.
+			TrustedResourceURLFromConstant(`https://example.com/?a%20b=x`),
+			map[string]string{`a b`: `evil`, `c`: `z`},
+			`https://example.com/?a%20b=x&c=z`,
+		},
+		{
+			// A trailing "?" means the query component is empty, so no key is
+			// reserved and the caller parameter is appended.
+			TrustedResourceURLFromConstant(`https://example.com/?`),
+			map[string]string{`a`: `y`},
+			`https://example.com/?a=y`,
+		},
 	} {
 		if got := TrustedResourceURLWithParams(test.tru, test.params).String(); got != test.want {
 			t.Errorf("TrustedResourceURLWithParams(%#v, %v) = %q, want %q", test.tru, test.params, got, test.want)

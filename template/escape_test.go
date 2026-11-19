@@ -496,6 +496,12 @@ func TestEscapeText(t *testing.T) {
 			context{state: stateBeforeValue, element: element{name: "link"}, attr: attr{name: "href"}, linkRel: " author cite license "},
 		},
 		{
+			// For duplicate attributes, the HTML parser uses the first occurrence,
+			// so the second rel attribute must not overwrite the first.
+			`<link rel="stylesheet" rel="preload" href=`,
+			context{state: stateBeforeValue, element: element{name: "link"}, attr: attr{name: "href"}, linkRel: " stylesheet "},
+		},
+		{
 			`<link rel="bookmark" href="www.foo.com">`,
 			context{state: stateText},
 		},

@@ -884,6 +884,110 @@ func TestSanitize(t *testing.T) {
 	}
 }
 
+// TestLinkRelHrefSanitizationContext verifies that the sanitization context of a
+// link element's href attribute value is chosen based on the final rel value of
+// the element: if the rel value contains tokens with conflicting trust
+// requirements, or cannot be fully determined at parse time, the href attribute
+// value must fail closed to the TrustedResourceURL sanitization context, so that
+// a safehtml.URL value cannot flow into a high-trust resource sink (e.g. a
+// stylesheet). Links whose rel tokens are all URL-compatible (e.g. author,
+// prefetch) must continue to accept safehtml.URL values.
+func TestLinkRelHrefSanitizationContext(t *testing.T) {
+	for _, test := range [...]struct {
+		input, output, err string
+	}{
+		// URL-compatible rel values keep accepting safehtml.URL and URL-typed values.
+		{
+			input:  `<link rel="author" href="{{ makeURLForTest "https://www.foo.com/page" }}">`,
+			output: `<link rel="author" href="https://www.foo.com/page">`,
+		},
+		{
+			input:  `<link rel="prefetch" href="{{ makeURLForTest "https://www.foo.com/resource" }}">`,
+			output: `<link rel="prefetch" href="https://www.foo.com/resource">`,
+		},
+		{
+			input:  `<link rel="preload" href="{{ makeURLForTest "https://www.foo.com/resource" }}">`,
+			output: `<link rel="preload" href="https://www.foo.com/resource">`,
+		},
+		{
+			input:  `<link rel="alternate author" href="{{ makeURLForTest "https://www.foo.com/page" }}">`,
+			output: `<link rel="alternate author" href="https://www.foo.com/page">`,
+		},
+		// A rel value that mixes URL-compatible tokens with tokens that turn the
+		// href into a high-trust resource load (e.g. stylesheet) fails closed: the
+		// same URL is rejected as a safehtml.URL value...
+		{
+			input: `<link rel="stylesheet preload" href="{{ makeURLForTest "https://www.foo.com/x.css" }}">`,
+			err:   `expected a safehtml.TrustedResourceURL value`,
+		},
+		{
+			input: `<link rel="stylesheet preload" href="{{ "https://www.foo.com/x.css" }}">`,
+			err:   `expected a safehtml.TrustedResourceURL value`,
+		},
+		// ...but is still accepted as a safehtml.TrustedResourceURL value.
+		{
+			input:  `<link rel="stylesheet preload" href="{{ makeTrustedResourceURLForTest "https://www.foo.com/x.css" }}">`,
+			output: `<link rel="stylesheet preload" href="https://www.foo.com/x.css">`,
+		},
+		{
+			input:  `<link rel="stylesheet" href="{{ makeTrustedResourceURLForTest "https://www.foo.com/x.css" }}">`,
+			output: `<link rel="stylesheet" href="https://www.foo.com/x.css">`,
+		},
+		// A rel value containing an action cannot be determined at parse time, so
+		// the href fails closed even if the static parts of the rel value are
+		// URL-compatible and the action's value would be too.
+		{
+			input: `<link rel="preload {{ "stylesheet" }}" href="{{ makeURLForTest "https://www.foo.com/x.css" }}">`,
+			err:   `expected a safehtml.TrustedResourceURL value`,
+		},
+		{
+			input: `<link rel="{{ "stylesheet" }} preload" href="{{ makeURLForTest "https://www.foo.com/x.css" }}">`,
+			err:   `expected a safehtml.TrustedResourceURL value`,
+		},
+		{
+			input: `<link rel="{{ "preload" }}" href="{{ makeURLForTest "https://www.foo.com/x.css" }}">`,
+			err:   `expected a safehtml.TrustedResourceURL value`,
+		},
+		{
+			input:  `<link rel="{{ "stylesheet" }} preload" href="{{ makeTrustedResourceURLForTest "https://www.foo.com/x.css" }}">`,
+			output: `<link rel="stylesheet preload" href="https://www.foo.com/x.css">`,
+		},
+		// For duplicate rel attributes, the first occurrence wins, matching the
+		// HTML parser: the second attribute cannot lower or raise the trust
+		// domain chosen for the href value.
+		{
+			input: `<link rel="stylesheet" rel="preload" href="{{ makeURLForTest "https://www.foo.com/x.css" }}">`,
+			err:   `expected a safehtml.TrustedResourceURL value`,
+		},
+		{
+			input:  `<link rel="preload" rel="stylesheet" href="{{ makeURLForTest "https://www.foo.com/x.css" }}">`,
+			output: `<link rel="preload" rel="stylesheet" href="https://www.foo.com/x.css">`,
+		},
+	} {
+		tmpl := Must(New("").Funcs(testConversionFuncs).Parse(stringConstant(test.input)))
+		var b bytes.Buffer
+		err := tmpl.Execute(&b, nil)
+		if test.err != "" {
+			if err == nil {
+				t.Errorf("%s : expected error", test.input)
+				continue
+			}
+			if got := err.Error(); !strings.Contains(got, test.err) {
+				t.Errorf("%s : error\n\t%q\ndoes not contain expected string\n\t%q", test.input, got, test.err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s : template execution failed:\n%s", test.input, err)
+			continue
+		}
+		if want, got := test.output, b.String(); want != got {
+			t.Errorf("%s : escaped output: got\n\t%s\nwant\n\t%s", test.input, got, want)
+			continue
+		}
+	}
+}
+
 func TestConditionalURLPrefixError(t *testing.T) {
 	data := struct {
 		B         []string

@@ -33,10 +33,19 @@ type context struct {
 	// and exactly one space at start and end, so that a lookup of any token foo can
 	// be performed by searching for the substring " foo ".
 	// This field will be empty if the parser is currently not in a link element,
-	// the rel attribute has not already been parsed in the current element, or if the
-	// value of the rel attribute cannot be determined at parse time.
+	// or if the rel attribute has not already been parsed in the current element.
+	// This field will be linkRelUnknown if the value of the rel attribute cannot be
+	// determined at parse time, e.g. because the attribute value contains an action.
 	linkRel string
 }
+
+// linkRelUnknown is the value of context.linkRel when the "rel" attribute value of the
+// current "link" element cannot be determined at parse time. Since the final rel value
+// decides whether the link's href is loaded as a high-trust resource (e.g. a stylesheet),
+// an unknown rel value must fail closed when the sanitization context of the href
+// attribute value is chosen. This value can never collide with a normalized rel
+// attribute value, which is always empty or starts and ends with a space.
+const linkRelUnknown = "\x00"
 
 // eq returns whether Context c is equal to Context d.
 func (c context) eq(d context) bool {

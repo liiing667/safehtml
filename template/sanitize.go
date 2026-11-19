@@ -149,11 +149,19 @@ func sanitizationContextForAttrVal(element, attr, linkRel string) (sanitizationC
 	if element == "link" && attr == "href" {
 		// Special case: safehtml.URL values are allowed in a link element's href attribute if that element's
 		// rel attribute possesses certain values.
+		// The final rel value must consist entirely of such values: if it contains any other value
+		// (e.g. "stylesheet"), the href might be loaded as a high-trust resource, so we fail closed
+		// to the default, stricter sanitization context for the href attribute.
 		relVals := strings.Fields(linkRel)
+		allURL := len(relVals) > 0
 		for _, val := range relVals {
-			if urlLinkRelVals[val] {
-				return sanitizationContextTrustedResourceURLOrURL, nil
+			if !urlLinkRelVals[val] {
+				allURL = false
+				break
 			}
+		}
+		if allURL {
+			return sanitizationContextTrustedResourceURLOrURL, nil
 		}
 	}
 	if dataAttributeNamePattern.MatchString(attr) {

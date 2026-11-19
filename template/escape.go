@@ -154,6 +154,14 @@ func (e *escaper) escapeAction(c context, n *parse.ActionNode) context {
 	case stateAttrName, stateTag:
 		c.state = stateAttrName
 	}
+	if c.state == stateAttr && c.element.name == "link" && c.attr.name == "rel" {
+		// This action is in the "rel" attribute value of a "link" element, so the
+		// final rel value cannot be determined at parse time. Mark it as unknown so
+		// that the sanitization context of this element's "href" attribute value
+		// fails closed instead of being chosen based on only the static parts of
+		// the rel value.
+		c.linkRel = linkRelUnknown
+	}
 	// TODO: integrate sanitizerForContext into escapeAction.
 	s, err := sanitizerForContext(c)
 	if err != nil {
@@ -718,7 +726,11 @@ func contextAfterText(c context, s []byte) (context, int) {
 		ret.scriptType = strings.ToLower(string(s[:i]))
 	}
 	// Save the link element's rel attribute value if we are parsing it for the first time.
-	if c.state == stateAttr && c.element.name == "link" && c.attr.name == "rel" {
+	// If the same element has an earlier rel attribute, keep its value instead: the HTML
+	// spec states that, for duplicate attributes, the first occurrence wins. Likewise, if
+	// the rel value could not be determined at parse time, keep linkRelUnknown so that the
+	// sanitization context of this element's href attribute value fails closed.
+	if c.state == stateAttr && c.element.name == "link" && c.attr.name == "rel" && c.linkRel == "" {
 		ret.linkRel = " " + strings.Join(strings.Fields(strings.TrimSpace(strings.ToLower(string(s[:i])))), " ") + " "
 	}
 	if c.delim != delimSpaceOrTagEnd {

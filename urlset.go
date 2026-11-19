@@ -15,8 +15,11 @@ import (
 // ASCII whitespace is U+0009 TAB, U+000A LF, U+000C FF, U+000D CR, or U+0020 SPACE.
 var asciiWhitespace [256]bool
 
-// Metacharacters that affect parsing of srcset values.
-var srcsetMetachars [256]bool
+// srcsetSeparators are the code points that separate image candidate strings
+// while splitting a srcset attribute: ASCII whitespace and U+002C COMMA.
+//
+// https://html.spec.whatwg.org/multipage/images.html#parsing-a-srcset-attribute
+var srcsetSeparators [256]bool
 
 func init() {
 	asciiWhitespace['\t'] = true
@@ -25,12 +28,8 @@ func init() {
 	asciiWhitespace['\f'] = true
 	asciiWhitespace['\r'] = true
 
-	srcsetMetachars['\t'] = true
-	srcsetMetachars[' '] = true
-	srcsetMetachars['\n'] = true
-	srcsetMetachars['\f'] = true
-	srcsetMetachars['\r'] = true
-	srcsetMetachars[','] = true
+	srcsetSeparators = asciiWhitespace
+	srcsetSeparators[','] = true
 }
 
 // URLSetSanitized returns a safe srcset by individually vetting each
@@ -40,35 +39,27 @@ func init() {
 func URLSetSanitized(str string) URLSet {
 	var buffer bytes.Buffer
 
-	for len(str) != 0 {
-		// Consume one image candidate
-		var url, metadata string
-		_, str = consumeIn(str, asciiWhitespace)
-		url, str = consumeNotIn(str, asciiWhitespace)
-		_, str = consumeIn(str, asciiWhitespace)
-		metadata, str = consumeNotIn(str, srcsetMetachars)
-		_, str = consumeIn(str, asciiWhitespace)
-
-		// Append sanitized content onto buffer.
-		if len(url) != 0 && isSafeURL(url) && isOptionalSrcMetadataWellFormed(metadata) {
-			if buffer.Len() != 0 {
-				// The space before the comma is necessary because
-				// a comma adjacent to a URL will attach to it.
-				buffer.WriteString(" , ")
-			}
-			// URL may contain commas.  Disambiguate.
-			appendURLToSet(url, &buffer)
-			if len(metadata) != 0 {
-				buffer.WriteByte(' ')
-				buffer.WriteString(metadata)
-			}
+	// Parse the input into image candidates exactly as a browser would, then
+	// independently vet each candidate.  A candidate is only emitted verbatim,
+	// so re-parsing the sanitized value binds each surviving URL to the same
+	// URL and descriptor that were vetted: vetted URLs are never rewritten and
+	// a rejected candidate can never alter an adjacent candidate.
+	for _, candidate := range parseSrcsetCandidates(str) {
+		if candidate.url == "" || candidate.hadTrailingComma || !isSafeSrcsetURL(candidate.url) ||
+			!isOptionalSrcMetadataWellFormed(candidate.descriptor) {
+			continue
 		}
-
-		// Consume any trailing comma
-		if len(str) == 0 || str[0] != ',' {
-			break
+		if buffer.Len() != 0 {
+			// The space after the comma is required so that the comma is not
+			// mistaken for part of the preceding URL.  The space before it is
+			// harmless ASCII whitespace within the previous descriptor.
+			buffer.WriteString(", ")
 		}
-		str = str[1:]
+		buffer.WriteString(candidate.url)
+		if candidate.descriptor != "" {
+			buffer.WriteByte(' ')
+			buffer.WriteString(candidate.descriptor)
+		}
 	}
 
 	if buffer.Len() == 0 {
@@ -78,57 +69,95 @@ func URLSetSanitized(str string) URLSet {
 	return URLSet{buffer.String()}
 }
 
-// appendURLToSet appends a URL so that it does not start or end with a comma
+// srcsetCandidate is one image candidate string: a URL and an optional
+// descriptor, both captured verbatim from the input so that emitting them
+// preserves the exact identity vetted here.
 //
 // https://html.spec.whatwg.org/multipage/images.html#srcset-attributes
-// parsing step 2 which says:
-// """
-// A valid non-empty URL that does not start or end with a U+002C COMMA character (,),
-// referencing a non-interactive, optionally animated, image resource that is neither
-// paged nor scripted
-// """
-//
-// Simply replacing all commas would break data:image/png;base64,IMAGECONTENT
-// Note: This breaks data URLs with empty content since they end with a comma.
-// We could handle that case by appending a '#'.
-func appendURLToSet(url string, buffer *bytes.Buffer) {
-	n := len(url)
-	left, right := 0, n
-	if url[left] == ',' {
-		buffer.WriteString("%2c")
-		left++
-	}
-	commaAtEnd := false
-	if left < right && url[right-1] == ',' {
-		commaAtEnd = true
-		right--
-	}
-	buffer.WriteString(url[left:right])
-	if commaAtEnd {
-		buffer.WriteString("%2c")
-	}
+type srcsetCandidate struct {
+	url string
+	// descriptor is the optional image candidate descriptor, captured
+	// verbatim so re-parsing the output binds it to the same URL.
+	descriptor string
+	// hadTrailingComma reports that the URL run ended in one or more commas,
+	// which a browser would strip.  Such a candidate cannot be emitted
+	// verbatim and is rejected to preserve round-trip identity.
+	hadTrailingComma bool
 }
 
-// consumeNotIn uses bytes in str as bit indices in mask to find
-// the least index >= left whose byte corresponds to a zero bit.
-func consumeNotIn(str string, mask [256]bool) (consumed, rest string) {
-	i, n := 0, len(str)
-	for ; i < n; i++ {
-		if mask[str[i]] {
-			return str[0:i], str[i:n]
+// parseSrcsetCandidates splits a srcset attribute value into image candidate
+// strings following
+// https://html.spec.whatwg.org/multipage/images.html#parsing-a-srcset-attribute.
+// Candidates are delimited by ASCII whitespace and U+002C COMMA characters, so
+// a comma can never separate a URL from its descriptor: any comma attached to
+// a URL is a trailing part of that URL.
+func parseSrcsetCandidates(str string) []srcsetCandidate {
+	var candidates []srcsetCandidate
+	pos := 0
+	for pos < len(str) {
+		// Splitting loop: consume the ASCII whitespace and commas separating
+		// candidates.
+		for pos < len(str) && srcsetSeparators[str[pos]] {
+			pos++
 		}
+		if pos == len(str) {
+			break
+		}
+
+		// The URL is the maximal run of non-whitespace code points.  Any
+		// commas it contains are part of the URL run, not candidate
+		// separators; only commas at the very end of the run are trailing.
+		urlStart := pos
+		for pos < len(str) && !asciiWhitespace[str[pos]] {
+			pos++
+		}
+		rawURL := str[urlStart:pos]
+		url := rawURL
+		hadTrailingComma := false
+		for len(url) != 0 && url[len(url)-1] == ',' {
+			url = url[:len(url)-1]
+			hadTrailingComma = true
+		}
+
+		var descriptor string
+		if !hadTrailingComma {
+			// Skip the whitespace following the URL, then take the first
+			// descriptor token up to the separating comma.
+			for pos < len(str) && asciiWhitespace[str[pos]] {
+				pos++
+			}
+			if pos < len(str) && str[pos] != ',' {
+				descStart := pos
+				for pos < len(str) && !asciiWhitespace[str[pos]] && str[pos] != ',' {
+					pos++
+				}
+				descriptor = str[descStart:pos]
+			}
+			// Skip any remaining descriptor tokens and whitespace up to the
+			// separating comma; the next splitting iteration consumes it.
+			for pos < len(str) && str[pos] != ',' {
+				pos++
+			}
+		}
+		// When hadTrailingComma is true, pos already points at the first
+		// trailing comma, which the next splitting iteration will consume.
+
+		candidates = append(candidates, srcsetCandidate{
+			url:              url,
+			descriptor:       descriptor,
+			hadTrailingComma: hadTrailingComma,
+		})
 	}
-	return str, ""
+	return candidates
 }
 
-// consumeIn is like consumeNotIn but treats mask as inverted.
-func consumeIn(str string, mask [256]bool) (consumed, rest string) {
-	for i, n := 0, len(str); i < n; i++ {
-		if !mask[str[i]] {
-			return str[0:i], str[i:n]
-		}
-	}
-	return str, ""
+// isSafeSrcsetURL reports whether url is a safe image-candidate URL.  The
+// srcset-specific comma rules are handled by parseSrcsetCandidates: leading
+// commas are candidate separators and never reach the URL, while a URL with
+// trailing commas is flagged via hadTrailingComma and rejected.  Here only the
+// generic safe-URL policy applies.
+func isSafeSrcsetURL(url string) bool {
+	return isSafeURL(url)
 }
 
 // isOptionalSrcMetadataWellFormed is true when its input is empty and
